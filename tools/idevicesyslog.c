@@ -71,8 +71,6 @@ static int find_space_offsets(const char *buffer, size_t length, size_t *space_o
 
 static unsigned char should_print_message(const char *buffer, size_t length)
 {
-    // if (length < 3) return 0; // don't want blank lines
-
     size_t space_offsets[3];
     int count = find_space_offsets(buffer, length, space_offsets);
     
@@ -322,7 +320,6 @@ int main(int argc, char *argv[])
 	if (num == 0) {
 		if (!udid) {
 			fprintf(stderr, "No device found. Plug in a device or pass UDID with -u to wait for device to be available.\n");
-			return -1;
 		} else {
 			fprintf(stderr, "Waiting for device with UDID %s to become available...\n", udid);
 		}
