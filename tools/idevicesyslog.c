@@ -45,16 +45,77 @@ static int exit_on_disconnect = 0;
 
 static char* udid = NULL;
 
+static char* requiredProcessName = NULL;
+static char* lineBuffer = NULL;
+static int lineOffset = 0;
+static char lastMessageFiltered = 0;
+
 static idevice_t device = NULL;
 static syslog_relay_client_t syslog = NULL;
 
 enum idevice_options lookup_opts = IDEVICE_LOOKUP_USBMUX | IDEVICE_LOOKUP_NETWORK;
 
+static int find_space_offsets(const char *buffer, size_t length, size_t *space_offsets_out)
+{
+    int o = 0;
+    for (size_t i = 16; i < length; i++) {
+        if (buffer[i] == ' ') {
+            space_offsets_out[o++] = i;
+            if (o == 3) {
+                break;
+            }
+        }
+    }
+    return o;
+}
+
+static unsigned char should_print_message(const char *buffer, size_t length)
+{
+    size_t space_offsets[3];
+    int count = find_space_offsets(buffer, length, space_offsets);
+    
+	if(count < 3) return !lastMessageFiltered;
+
+    // Check whether process name matches the one passed to -p option and filter if needed
+    if (requiredProcessName != NULL) {
+        int nameLength = space_offsets[1] - space_offsets[0]; //This size includes the NULL terminator.
+        
+        char *processName = malloc(nameLength);
+        processName[nameLength - 1] = '\0';
+        memcpy(processName, buffer + space_offsets[0] + 1, nameLength - 1);
+
+        for (int i = strlen(processName); i != 0; i--)
+            if (processName[i] == '[')
+                processName[i] = '\0';
+        
+        if (strcmp(processName, requiredProcessName) != 0) {
+			lastMessageFiltered = 1;
+            free(processName);
+            return 0;
+        }
+        free(processName);
+    }
+
+	lastMessageFiltered = 0;
+    
+    // More filtering options can be added here and return 0 when they won't meed filter criteria
+    
+    return 1;
+}
+
 static void syslog_callback(char c, void *user_data)
 {
-	putchar(c);
 	if (c == '\n') {
-		fflush(stdout);
+		lineBuffer[lineOffset++] = '\0';
+		
+		if(should_print_message(lineBuffer, lineOffset)) {
+			puts(lineBuffer);
+			fflush(stdout);
+		}
+
+		lineOffset = 0;
+	} else {
+		lineBuffer[lineOffset++] = c;
 	}
 }
 
@@ -179,11 +240,12 @@ static void print_usage(int argc, char **argv, int is_error)
 	fprintf(is_error ? stderr : stdout, "Usage: %s [OPTIONS]\n", (name ? name + 1: argv[0]));
 	fprintf(is_error ? stderr : stdout,
 	  "Relay syslog of a connected device.\n\n" \
-	  "  -u, --udid UDID  target specific device by UDID\n" \
-	  "  -n, --network    connect to network device even if available via USB\n" \
-	  "  -h, --help       prints usage information\n" \
-	  "  -d, --debug      enable communication debugging\n" \
-	  "  -x, --exit       exit when device disconnects\n" \
+	  "  -u, --udid UDID  		target specific device by UDID\n" \
+	  "  -p, --process NAME  	filters log by process name\n" \
+	  "  -n, --network    		connect to network device even if available via USB\n" \
+	  "  -h, --help       		prints usage information\n" \
+	  "  -d, --debug      		enable communication debugging\n" \
+	  "  -x, --exit       		exit when device disconnects\n" \
 	  "\n" \
 	  "Homepage: <" PACKAGE_URL ">\n"
 	);
@@ -196,6 +258,7 @@ int main(int argc, char *argv[])
 		{ "debug", no_argument, NULL, 'd' },
 		{ "help", no_argument, NULL, 'h' },
 		{ "udid", required_argument, NULL, 'u' },
+		{ "process", required_argument, NULL, 'p' },
 		{ "network", no_argument, NULL, 'n' },
 		{ "exit", no_argument, NULL, 'x' },
 		{ NULL, 0, NULL, 0}
@@ -208,7 +271,7 @@ int main(int argc, char *argv[])
 	signal(SIGPIPE, SIG_IGN);
 #endif
 
-	while ((c = getopt_long(argc, argv, "dhu:nx", longopts, NULL)) != -1) {
+	while ((c = getopt_long(argc, argv, "dhup:nx", longopts, NULL)) != -1) {
 		switch (c) {
 		case 'd':
 			idevice_set_debug_level(1);
@@ -231,11 +294,21 @@ int main(int argc, char *argv[])
 		case 'h':
 			print_usage(argc, argv, 0);
 			return 0;
+		case 'p':
+			if (!*optarg) {
+				fprintf(stderr, "ERROR: NAME must not be empty!\n");
+				print_usage(argc, argv, 1);
+				return 2;
+			}
+			requiredProcessName = strdup(optarg);
+			break;
 		default:
 			print_usage(argc, argv, 1);
 			return 2;
 		}
 	}
+
+	lineBuffer = (char *)malloc(sizeof(char) * 10000);
 
 	argc -= optind;
 	argv += optind;
@@ -247,7 +320,6 @@ int main(int argc, char *argv[])
 	if (num == 0) {
 		if (!udid) {
 			fprintf(stderr, "No device found. Plug in a device or pass UDID with -u to wait for device to be available.\n");
-			return -1;
 		} else {
 			fprintf(stderr, "Waiting for device with UDID %s to become available...\n", udid);
 		}
@@ -262,6 +334,8 @@ int main(int argc, char *argv[])
 	stop_logging();
 
 	free(udid);
+	free(requiredProcessName);
+	free(lineBuffer);
 
 	return 0;
 }
